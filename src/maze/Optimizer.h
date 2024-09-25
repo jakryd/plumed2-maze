@@ -1,7 +1,5 @@
 /* +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-Copyright (c) 2019 Jakub Rydzewski (jr@fizyka.umk.pl). All rights reserved.
-
-See http://www.maze-code.github.io for more information.
+Copyright (c) 2022 Jakub Rydzewski (jr@fizyka.umk.pl). All rights reserved.
 
 This file is part of maze.
 
@@ -23,335 +21,136 @@ along with maze. If not, see <https://www.gnu.org/licenses/>.
 #define __PLUMED_maze_Optimizer_h
 
 /**
- * @file Optimizer.h
- *
- * @author J. Rydzewski (jr@fizyka.umk.pl)
- */
+           __  ___
+ |\/|  /\   / |__
+ |  | /~~\ /_ |___
+
+  @author Jakub Rydzewski <jr@fizyka.umk.pl>
+  @version 2.0
+  @file plumed2/src/maze/Optimizer.h
+*/
+
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "colvar/Colvar.h"
-#include "tools/Communicator.h"
-#include "tools/OpenMP.h"
+
 #include "tools/NeighborList.h"
+#include "tools/OFile.h"
+#include "tools/Random.h"
+#include "tools/SwitchingFunction.h"
 #include "tools/Vector.h"
 
-#include "Core.h"
-#include "Loss.h"
-
-#include <memory>
-
-#define PLUMED_OPT_INIT(ao) Action(ao), Optimizer(ao)
+#include "Util.h"
 
 namespace PLMD {
 namespace maze {
 
 /**
- * @ingroup INHERIT
- *
- * @class Optimizer Optimizer.h "maze/Optimizer.h"
- *
- * @brief Base class for implementing optimizers for ligand unbinding.
- *
- * An optimizer is defined as a colvar that can be passed to Optimizer_Bias.
- */
-class Optimizer: public colvar::Colvar {
-public:
-  /**
-   * PLMD constructor.
-   *
-   * @param[in] ao PLMD::ActionOptions&
-   */
-  explicit Optimizer(const ActionOptions&);
+\ingroup INHERIT
+Abstract class for implementing optimizers. An optimizer must override the
+`optimize()` function and return an optimal neighbor accordindly to its 
+optimization method. This optimal neighbor can be then used to bias the 
+system toward it.
+*/
 
-  /**
-   * Destructor.
-   */
-  ~Optimizer() { /* Nothing to do. */ }
+class Optimizer : public colvar::Colvar {
+  using distance_t = double (Optimizer::*)(array_t, array_t) const;
 
-  /**
-   * Registers PLMD keywords.
-   *
-   * @param[in] keys PLMD keywords
-   */
+ public:
+  explicit Optimizer(const ActionOptions& action_options);
+  ~Optimizer();
+
   static void registerKeywords(Keywords& keys);
 
-  /**
-   * The pairing function needs to be overridden by a specific optimizer.
-   *
-   * @param[in] distance distance between a pair of atoms
-   */
-  virtual double pairing(double distance) const;
+  void calculate() override;
+  void prepare() override;
+  void update() override;
+  void apply() override {}
 
-  /**
-   * Optimal values needed for biasing are computed by methods overridding the
-   * optimize function.
-   */
-  virtual void optimize() = 0;
+  virtual std::pair<double, array_t> optimize() = 0;
 
-  /**
-   * Calculate the optimal direction of pulling.
-   */
-  void calculate();
+  double loss(array_t neighbor) const;
+  double dist_neighbor() const;
 
-  /**
-   * Prepare the neighbor list.
-   */
-  void prepare();
+  // Function interface for `ActionAtomistic::pbcDistance` and `delta` to use
+  // either depending on the keyword `NOPBC`.
+  double distance_pbc(array_t pk, array_t pl) const;
+  double distance_nopbc(array_t pk, array_t pl) const;
 
-  /**
-   * Score a ligand-protein configuration.
-   *
-   * @return score
-   */
-  double score();
+  // Uses a pointer to member functions of type `distance_t` to skip checking
+  // `NOPBC` every time distance is calculated for an atom pair in the
+  // neighbor list. The pointer `distance_ptr` is initialized during keywords
+  // processing.
+  double distance(size_t ndx_pair) const;
+  double distance(size_t ndx_pair, array_t neighbor) const;
 
-  /**
-   * Calculate sampling radius as the minimal distance between two groups in
-   * neighbors list.
-   *
-   * @return minimal distance of ligand-protein atom pairs
-   */
-  double sampling_radius();
+  array_t rnd_neighbor();
 
-  /**
-   * Load new positions of atoms in the neighbor list.
-   */
-  void update_nl();
+  array_t neighbor() const { return opt_arg_; }
+  size_t stride() const { return opt_stride_; }
+  double step() const { return opt_step_; }
+  void update_data_order(const vector_t<std::string>& order) { data_order_ = order; }
 
-  /**
-   * Calculate the center of mass.
-   *
-   * @return center of mass
-   */
-  Vector center_of_mass() const;
+ private:
+  // Ranks of processes.
+  size_t mp_rank_;
+  // Number of processes.
+  size_t mp_stride_;
+  // Number of threads.
+  size_t mp_n_threads_;
 
-public:
-  /**
-   * Getters and setters.
-   */
-
-  std::string get_label() const;
-  void set_label(const std::string&);
-
-  // Start optimizer at time = 0.
-  void start_step_0();
-
-  // Start optimizer at time = optimizer stride.
-  void start_step_stride();
-
-  Vector get_opt() const;
-  void set_opt(Vector);
-
-  double get_opt_value() const;
-  void set_opt_value(double);
-
-  unsigned int get_optimizer_stride() const;
-  void set_optimizer_stride(unsigned int);
-
-  bool is_pbc_on() const;
-  void pbc_on();
-  void pbc_off();
-
-  unsigned int get_n_iterations() const;
-  void set_n_iterations(unsigned int);
-
-  double get_sampling_radius() const;
-  void set_sampling_radius(double);
-
-  unsigned int get_rank_openmp() const;
-  void set_rank_openmp(unsigned int);
-
-  unsigned int get_stride_openmp() const;
-  void set_stride_openmp(unsigned int);
-
-  unsigned int get_n_threads_openmp() const;
-  void set_n_threads_openmp(unsigned int);
-
-  unsigned int get_nl_stride() const;
-  void set_nl_stride(unsigned int);
-
-  double get_nl_cutofff() const;
-  void set_nl_cutoff(double);
-
-protected:
-  //! Optimizer label.
-  std::string label_;
-
-  //! Start either at time =  0 or time = optimizer stride.
-  bool first_step_;
-
-  //! Biasing direction.
-  Vector opt_;
-
-  //! Current loss function value.
-  double opt_value_;
-
-  //! Optimizer stride.
-  unsigned int optimizer_stride_;
-
-  //! Periodic boundary conditions.
+  // Periodic boundary conditions.
   bool pbc_;
 
-  //! Number of global iterations.
-  unsigned int n_iter_;
-
-  //! Sampling radius.
-  double sampling_r_;
-
-  /**
-   * OpenMP
-   */
-  unsigned int rank_;
-  unsigned int stride_;
-  unsigned int n_threads_;
-
-  //! Neighbor list of ligand-protein atom pairs.
-  std::unique_ptr<NeighborList> neighbor_list_;
-
-  //! Neighbor list cut-off.
+  // Neighbor list.
+  bool nl_on_;
+  // Perform computations on neighbor list in serial.
+  bool nl_serial_;
+  bool nl_started_;
+  bool nl_validated_;
+  // Terminate simulation if neighbor list is empty.
+  bool nl_committor_;
+  size_t nl_stride_;
   double nl_cutoff_;
+  std::unique_ptr<NeighborList> nl_list_ptr;
 
-  //! Neighbor list stride.
-  int nl_stride_;
+  // A pointer to for member functions computing distances.
+  distance_t distance_ptr;
 
-private:
-  bool serial_;
-  bool validate_list_;
-  bool first_time_;
+ protected:
+  size_t opt_stride_;
+  size_t opt_n_iter_;
+  double opt_val_;
+  double opt_step_;
+  bool opt_step_adaptive_;
+  bool opt_finished_;
+  array_t opt_arg_;
 
-  //! Pointer to the loss function.
-  Loss* loss_;
-  std::vector<Loss*> vec_loss_;
+  // Switching function to calculate loss.
+  SwitchingFunction switch_func_;
 
-public:
-  /*
-   * Pointers to PLMD components.
-   */
+  enum id {kX, kY, kZ, kLoss, kStep, 
+      /* number of elements in enum */ n_value = kStep - kX};
+  vector_t<value_t*> value_;
 
-  //! Biased cv.
-  Value* value_x_;
-  Value* value_y_;
-  Value* value_z_;
+  std::map<std::string, vector_t<double>> data_;
+  vector_t<std::string> data_order_;
 
-  //! Loss value.
-  Value* value_action_;
-  //! Sampling radiues value.
-  Value* value_sampling_radius_;
+  bool verbose_;
+  bool silent_;
+  std::string output_fmt_;
+  std::string output_filename_;
+  std::shared_ptr<OFile> output_file_ptr;
+
+  Random rnd_;
+  size_t rnd_seed_;
 };
 
-/*
- * Getters and setters.
- */
+}  // namespace maze
+}  // namespace PLMD
 
-inline void Optimizer::set_nl_cutoff(double nl_cutoff) {
-  nl_cutoff_=nl_cutoff;
-}
-
-inline double Optimizer::get_nl_cutofff() const {
-  return nl_cutoff_;
-}
-
-inline void Optimizer::set_nl_stride(unsigned int nl_stride) {
-  nl_stride_=nl_stride;
-}
-
-inline unsigned int Optimizer::get_nl_stride() const {
-  return nl_stride_;
-}
-
-inline void Optimizer::set_n_threads_openmp(unsigned int n_threads) {
-  n_threads_=n_threads;
-}
-
-inline unsigned int Optimizer::get_n_threads_openmp() const {
-  return n_threads_;
-}
-
-inline void Optimizer::set_stride_openmp(unsigned int stride) {
-  stride_=stride;
-}
-
-inline unsigned int Optimizer::get_stride_openmp() const {
-  return stride_;
-}
-
-inline void Optimizer::set_rank_openmp(unsigned int rank) {
-  rank_=rank;
-}
-
-inline unsigned int Optimizer::get_rank_openmp() const {
-  return rank_;
-}
-
-inline void Optimizer::set_sampling_radius(double sampling_r) {
-  sampling_r_=sampling_r;
-}
-
-inline double Optimizer::get_sampling_radius() const {
-  return sampling_r_;
-}
-
-inline void Optimizer::set_n_iterations(unsigned int n_iter) {
-  n_iter_=n_iter;
-}
-
-inline unsigned int Optimizer::get_n_iterations() const {
-  return n_iter_;
-}
-
-inline void Optimizer::pbc_off() {
-  pbc_=false;
-}
-
-inline void Optimizer::pbc_on() {
-  pbc_=true;
-}
-
-inline bool Optimizer::is_pbc_on() const {
-  return pbc_==true;
-}
-
-inline void Optimizer::set_optimizer_stride(unsigned int optimizer_stride) {
-  optimizer_stride_=optimizer_stride;
-}
-
-inline unsigned int Optimizer::get_optimizer_stride() const {
-  return optimizer_stride_;
-}
-
-inline void Optimizer::set_opt_value(double opt_value) {
-  opt_value_=opt_value;
-}
-
-inline double Optimizer::get_opt_value() const {
-  return opt_value_;
-}
-
-// cppcheck-suppress passedByValue
-inline void Optimizer::set_opt(Vector opt) {
-  opt_=opt;
-}
-
-inline Vector Optimizer::get_opt() const {
-  return opt_;
-}
-
-inline void Optimizer::set_label(const std::string& label) {
-  label_=label;
-}
-
-inline std::string Optimizer::get_label() const {
-  return label_;
-}
-
-inline void Optimizer::start_step_0() {
-  first_step_=false;
-}
-
-inline void Optimizer::start_step_stride() {
-  first_step_=true;
-}
-
-} // namespace maze
-} // namespace PLMD
-
-#endif // __PLUMED_maze_Optimizer_h
+#endif  // __PLUMED_maze_Optimizer_h
